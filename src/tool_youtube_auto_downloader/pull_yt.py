@@ -22,7 +22,7 @@ class DownloadTracker:
         self.downloaded_videos: dict[str, str] = self._load_history()
 
     def _load_history(self) -> dict[str, str]:
-        """Load previously downloaded video IDs and their directory names from history file."""
+        """Load previously downloaded video IDs and their filenames from history file."""
         if not self.history_file.exists():
             return {}
         try:
@@ -34,7 +34,7 @@ class DownloadTracker:
             return {}
 
     def _save_history(self) -> None:
-        """Save downloaded video IDs and directory names to history file."""
+        """Save downloaded video IDs and filenames to history file."""
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.history_file, "w", encoding="utf-8") as f:
@@ -46,13 +46,13 @@ class DownloadTracker:
         """Check if a video ID has already been downloaded."""
         return video_id in self.downloaded_videos
 
-    def get_dirname(self, video_id: str) -> str | None:
-        """Get the directory name for a downloaded video ID."""
+    def get_filename(self, video_id: str) -> str | None:
+        """Get the filename for a downloaded video ID."""
         return self.downloaded_videos.get(video_id)
 
-    def mark_downloaded(self, video_id: str, dirname: str) -> None:
-        """Mark a video ID as downloaded with its directory name and save to history."""
-        self.downloaded_videos[video_id] = dirname
+    def mark_downloaded(self, video_id: str, filename: str) -> None:
+        """Mark a video ID as downloaded with its filename and save to history."""
+        self.downloaded_videos[video_id] = filename
         self._save_history()
 
 
@@ -65,11 +65,11 @@ class YouTubePuller:
         self.all_videos_dir = output_dir / "_all_videos"
         self.all_videos_dir.mkdir(parents=True, exist_ok=True)
 
-    def _get_ydl_opts(self, output_dir: Path, video_folder: str) -> dict[str, Any]:
+    def _get_ydl_opts(self, output_dir: Path, filename_template: str) -> dict[str, Any]:
         """Build yt-dlp options for audio download with metadata."""
         return {
-            "paths": {"home": str(output_dir / video_folder)},
-            "outtmpl": {"default": "%(id)s - %(title)s.%(ext)s"},
+            "paths": {"home": str(output_dir)},
+            "outtmpl": {"default": filename_template},
             "format": "bestaudio/best",
             "postprocessors": [
                 {
@@ -81,7 +81,7 @@ class YouTubePuller:
                 {"key": "EmbedThumbnail"},
             ],
             "writethumbnail": True,
-            "writeinfojson": True,
+            "writeinfojson": False,
             "ignoreerrors": True,
             "no_warnings": False,
             "extract_flat": False,
@@ -112,12 +112,12 @@ class YouTubePuller:
     def _download_video(self, video_id: str, video_title: str = "") -> str | None:
         """
         Download a single video as audio to the _all_videos directory.
-        Each video gets its own folder.
-        Returns the directory name if successful, None otherwise.
+        Filename format: Title.VIDEO_ID.opus
+        Returns the filename if successful, None otherwise.
         """
         if self.tracker.is_downloaded(video_id):
             print(f"  Already downloaded: {video_id}")
-            return self.tracker.get_dirname(video_id)
+            return self.tracker.get_filename(video_id)
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
 
@@ -132,30 +132,24 @@ class YouTubePuller:
             print(f"  ✗ Error extracting info for {video_id}: {e}", file=sys.stderr)
             return None
 
-        # Create folder name
-        folder_name = f"{video_id} - {self._sanitize_name(title)}"
-        ydl_opts = self._get_ydl_opts(self.all_videos_dir, folder_name)
+        # Create filename: Title.VIDEO_ID.ext
+        sanitized_title = self._sanitize_name(title)
+        filename_template = f"{sanitized_title}.{video_id}.%(ext)s"
+        ydl_opts = self._get_ydl_opts(self.all_videos_dir, filename_template)
 
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
 
-                self.tracker.mark_downloaded(video_id, folder_name)
-                print(f"  ✓ Downloaded: {folder_name}")
-                return folder_name
+                # The final filename will be Title.VIDEO_ID.opus
+                final_filename = f"{sanitized_title}.{video_id}.opus"
+                self.tracker.mark_downloaded(video_id, final_filename)
+                print(f"  ✓ Downloaded: {final_filename}")
+                return final_filename
 
         except Exception as e:
             print(f"  ✗ Error downloading {video_id}: {e}", file=sys.stderr)
             return None
-
-    def _create_symlink(self, target_file: Path, link_path: Path) -> None:
-        """Create a symbolic link, replacing it if it already exists."""
-        try:
-            if link_path.exists() or link_path.is_symlink():
-                link_path.unlink()
-            link_path.symlink_to(target_file)
-        except OSError as e:
-            print(f"  Warning: Could not create symlink {link_path}: {e}", file=sys.stderr)
 
     def pull_single_video(self, url: str) -> None:
         """Download a single video."""
@@ -177,7 +171,7 @@ class YouTubePuller:
         print("\n✓ Finished processing video")
 
     def pull_playlist(self, url: str) -> None:
-        """Download all videos from a playlist and create symlinks."""
+        """Download all videos from a playlist."""
         print("\n=== Processing playlist ===")
         print(f"URL: {url}")
 
@@ -188,21 +182,19 @@ class YouTubePuller:
             return
 
         playlist_title = info.get("title", "Unknown Playlist")
-        playlist_dir_name = self._sanitize_name(playlist_title)
-        playlist_dir = self.output_dir / playlist_dir_name
-
         entries = info.get("entries", [])
+
         if not entries:
             print("No videos found in playlist")
             return
 
         print(f"Playlist: {playlist_title}")
         print(f"Found {len(entries)} videos")
-        print(f"Output directory: {playlist_dir}")
 
-        playlist_dir.mkdir(parents=True, exist_ok=True)
+        # Download each video
+        downloaded_count = 0
+        skipped_count = 0
 
-        # Download each video and create symlinks
         for i, entry in enumerate(entries, 1):
             if not entry:
                 continue
@@ -216,34 +208,20 @@ class YouTubePuller:
 
             print(f"\n[{i}/{len(entries)}] {video_title} ({video_id})")
 
-            # Download to _all_videos (or get existing dirname)
-            dirname = self._download_video(video_id, video_title)
+            # Download to _all_videos
+            was_already_downloaded = self.tracker.is_downloaded(video_id)
+            filename = self._download_video(video_id, video_title)
 
-            if dirname:
-                # Create symlink to the video folder in playlist directory
-                target_dir = self.all_videos_dir / dirname
-                link_path = playlist_dir / dirname
-
-                # Use relative path for symlink
-                relative_target = Path("..") / "_all_videos" / dirname
-
-                if target_dir.exists():
-                    try:
-                        if link_path.exists() or link_path.is_symlink():
-                            if link_path.is_symlink():
-                                link_path.unlink()
-                            elif link_path.is_dir():
-                                link_path.rmdir()
-                        link_path.symlink_to(relative_target, target_is_directory=True)
-                        print("  ✓ Created symlink in playlist folder")
-                    except OSError as e:
-                        print(f"  ✗ Could not create symlink: {e}", file=sys.stderr)
+            if filename:
+                if was_already_downloaded:
+                    skipped_count += 1
                 else:
-                    print(f"  ✗ Target directory not found: {target_dir}", file=sys.stderr)
+                    downloaded_count += 1
 
         print(f"\n✓ Finished processing playlist: {playlist_title}")
         print(f"  Total videos in playlist: {len(entries)}")
-        print(f"  Playlist folder: {playlist_dir}")
+        print(f"  Downloaded: {downloaded_count}")
+        print(f"  Skipped (already downloaded): {skipped_count}")
 
     def pull(self, url: str) -> None:
         """Pull content from URL (auto-detect if video or playlist)."""
