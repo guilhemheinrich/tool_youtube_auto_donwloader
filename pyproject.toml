@@ -7,7 +7,10 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "yt-dlp (>=2025.9.26,<2026.0.0)",
+    "mutagen (>=1.47.0,<2.0.0)",
+]
 
 [build-system]
 requires = [
@@ -27,6 +30,7 @@ tomli = "*"
 [tool.poetry.scripts]
 gen-doc = "pyscaf.documentation.scripts.parse_doc:gen_doc"
 serve-doc = "pyscaf.documentation.scripts.parse_doc:serve_doc"
+yt-pull = "tool_youtube_auto_downloader.pull_yt:main"
 
 [tool.pyscaf.documentation]
 output_path = "docs"
