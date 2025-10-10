@@ -1,0 +1,46 @@
+[project]
+name = "tool-youtube-auto-downloader"
+version = "0.1.0"
+description = ""
+authors = [
+    { name = "guilhemheinrich", email = "guilhem.heinrich@gmail.com" },
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = [
+    "poetry-core>=2.0.0,<3.0.0",
+]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [
+    { include = "tool_youtube_auto_downloader", from = "src" },
+]
+
+[tool.poetry.group.dev.dependencies]
+pdoc = "*"
+tomli = "*"
+
+[tool.poetry.scripts]
+gen-doc = "pyscaf.documentation.scripts.parse_doc:gen_doc"
+serve-doc = "pyscaf.documentation.scripts.parse_doc:serve_doc"
+
+[tool.pyscaf.documentation]
+output_path = "docs"
+
+[tool.ruff]
+src = ["src"]
+select = [
+    "B",  # flake8-bugbear - https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
+    "C4", # flake8-comprehensions - https://docs.astral.sh/ruff/rules/#flake8-comprehensions-c4
+    "E",  # pycodestyle errors - https://docs.astral.sh/ruff/rules/#error-e
+    "F",  # pyflakes rules - https://docs.astral.sh/ruff/rules/#pyflakes-f
+    "N",  # pep8-naming - https://docs.astral.sh/ruff/rules/#pep8-naming-n
+    "W",  # pycodestyle warnings - https://docs.astral.sh/ruff/rules/#warning-w
+    "I",  # isort - https://docs.astral.sh/ruff/rules/#isort-i
+    "UP", # pyupgrade - https://docs.astral.sh/ruff/rules/#pyupgrade-up
+]
+line-length = 120
