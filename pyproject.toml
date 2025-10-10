@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "yt-dlp (>=2025.9.26,<2026.0.0)",
     "mutagen (>=1.47.0,<2.0.0)",
+    "pyyaml (>=6.0,<7.0)",
 ]
 
 [build-system]
@@ -31,6 +32,7 @@ tomli = "*"
 gen-doc = "pyscaf.documentation.scripts.parse_doc:gen_doc"
 serve-doc = "pyscaf.documentation.scripts.parse_doc:serve_doc"
 yt-pull = "tool_youtube_auto_downloader.pull_yt:main"
+yt-batch = "tool_youtube_auto_downloader.main:main"
 
 [tool.pyscaf.documentation]
 output_path = "docs"
