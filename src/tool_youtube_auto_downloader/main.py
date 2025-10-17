@@ -66,6 +66,10 @@ def validate_config(config: dict) -> None:
         print("Required keys: output_dir, history_file", file=sys.stderr)
         sys.exit(1)
 
+    # Optional keys with defaults
+    if "playlist_as_album" not in config:
+        config["playlist_as_album"] = False
+
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
@@ -88,9 +92,11 @@ def main():
 
     output_dir = Path(config["output_dir"]).expanduser().resolve()
     history_file = Path(config["history_file"]).expanduser().resolve()
+    playlist_as_album = config.get("playlist_as_album", False)
 
     print(f"Output directory: {output_dir}")
     print(f"History file: {history_file}")
+    print(f"Playlist as album: {playlist_as_album}")
 
     # Read URLs
     print(f"\nReading URLs from: {args.urls_file}")
@@ -104,7 +110,7 @@ def main():
 
     # Initialize tracker and puller
     tracker = DownloadTracker(history_file)
-    puller = YouTubePuller(output_dir, tracker)
+    puller = YouTubePuller(output_dir, tracker, playlist_as_album=playlist_as_album)
 
     # Process each URL
     for i, url in enumerate(urls, 1):

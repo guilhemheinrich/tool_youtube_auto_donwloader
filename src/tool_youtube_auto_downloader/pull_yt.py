@@ -59,15 +59,16 @@ class DownloadTracker:
 class YouTubePuller:
     """Handles pulling and downloading YouTube content."""
 
-    def __init__(self, output_dir: Path, tracker: DownloadTracker):
+    def __init__(self, output_dir: Path, tracker: DownloadTracker, playlist_as_album: bool = False):
         self.output_dir = output_dir
         self.tracker = tracker
+        self.playlist_as_album = playlist_as_album
         self.all_videos_dir = output_dir / "_all_videos"
         self.all_videos_dir.mkdir(parents=True, exist_ok=True)
 
-    def _get_ydl_opts(self, output_dir: Path, filename_template: str) -> dict[str, Any]:
+    def _get_ydl_opts(self, output_dir: Path, filename_template: str, album: str | None = None) -> dict[str, Any]:
         """Build yt-dlp options for audio download with metadata."""
-        return {
+        opts = {
             "paths": {"home": str(output_dir)},
             "outtmpl": {"default": filename_template},
             "format": "bestaudio/best",
@@ -86,6 +87,12 @@ class YouTubePuller:
             "no_warnings": False,
             "extract_flat": False,
         }
+
+        # Add album metadata if specified
+        if album:
+            opts["postprocessor_args"] = {"ffmpeg": ["-metadata", f"album={album}"]}
+
+        return opts
 
     def _extract_info(self, url: str, extract_flat: bool = False) -> dict[str, Any] | None:
         """Extract video/playlist information."""
@@ -109,7 +116,7 @@ class YouTubePuller:
             name = name.replace(char, "_")
         return name.strip()[:200]
 
-    def _download_video(self, video_id: str, video_title: str = "") -> str | None:
+    def _download_video(self, video_id: str, video_title: str = "", album: str | None = None) -> str | None:
         """
         Download a single video as audio to the _all_videos directory.
         Filename format: Title.VIDEO_ID.opus
@@ -135,7 +142,7 @@ class YouTubePuller:
         # Create filename: Title.VIDEO_ID.ext
         sanitized_title = self._sanitize_name(title)
         filename_template = f"{sanitized_title}.{video_id}.%(ext)s"
-        ydl_opts = self._get_ydl_opts(self.all_videos_dir, filename_template)
+        ydl_opts = self._get_ydl_opts(self.all_videos_dir, filename_template, album=album)
 
         try:
             with YoutubeDL(ydl_opts) as ydl:
@@ -191,6 +198,11 @@ class YouTubePuller:
         print(f"Playlist: {playlist_title}")
         print(f"Found {len(entries)} videos")
 
+        # Use playlist title as album if option is enabled
+        album = playlist_title if self.playlist_as_album else None
+        if album:
+            print(f"Album metadata will be set to: {album}")
+
         # Download each video
         downloaded_count = 0
         skipped_count = 0
@@ -208,9 +220,9 @@ class YouTubePuller:
 
             print(f"\n[{i}/{len(entries)}] {video_title} ({video_id})")
 
-            # Download to _all_videos
+            # Download to _all_videos with album metadata if enabled
             was_already_downloaded = self.tracker.is_downloaded(video_id)
-            filename = self._download_video(video_id, video_title)
+            filename = self._download_video(video_id, video_title, album=album)
 
             if filename:
                 if was_already_downloaded:
@@ -245,6 +257,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-file", required=True, type=Path, help="Path to history file (JSON) for tracking downloaded videos"
     )
+    parser.add_argument(
+        "--playlist-as-album",
+        action="store_true",
+        help="Set playlist title as album metadata for all videos in the playlist",
+    )
     return parser.parse_args()
 
 
@@ -254,7 +271,7 @@ def main():
 
     # Initialize tracker and puller
     tracker = DownloadTracker(args.history_file)
-    puller = YouTubePuller(args.output_dir, tracker)
+    puller = YouTubePuller(args.output_dir, tracker, playlist_as_album=args.playlist_as_album)
 
     # Pull content
     puller.pull(args.url)
