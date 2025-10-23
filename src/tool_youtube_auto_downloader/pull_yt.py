@@ -2,12 +2,14 @@
 """
 YouTube Auto Downloader - Pull Module
 Downloads YouTube videos/playlists as audio files.
-Uses symlinks for playlists to avoid duplicate downloads.
+All .opus files are stored directly in the output directory.
 """
 
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,7 @@ class DownloadTracker:
         self.downloaded_videos: dict[str, str] = self._load_history()
 
     def _load_history(self) -> dict[str, str]:
-        """Load previously downloaded video IDs and their filenames from history file."""
+        """Load previously downloaded video IDs and their directory names from history file."""
         if not self.history_file.exists():
             return {}
         try:
@@ -34,7 +36,7 @@ class DownloadTracker:
             return {}
 
     def _save_history(self) -> None:
-        """Save downloaded video IDs and filenames to history file."""
+        """Save downloaded video IDs and directory names to history file."""
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.history_file, "w", encoding="utf-8") as f:
@@ -46,31 +48,45 @@ class DownloadTracker:
         """Check if a video ID has already been downloaded."""
         return video_id in self.downloaded_videos
 
-    def get_filename(self, video_id: str) -> str | None:
-        """Get the filename for a downloaded video ID."""
+    def get_dirname(self, video_id: str) -> str | None:
+        """Get the directory name for a downloaded video ID."""
         return self.downloaded_videos.get(video_id)
 
-    def mark_downloaded(self, video_id: str, filename: str) -> None:
-        """Mark a video ID as downloaded with its filename and save to history."""
-        self.downloaded_videos[video_id] = filename
+    def mark_downloaded(self, video_id: str, dirname: str) -> None:
+        """Mark a video ID as downloaded with its directory name and save to history."""
+        self.downloaded_videos[video_id] = dirname
         self._save_history()
 
 
 class YouTubePuller:
     """Handles pulling and downloading YouTube content."""
 
-    def __init__(self, output_dir: Path, tracker: DownloadTracker, playlist_as_album: bool = False):
+    def __init__(self, output_dir: Path, tracker: DownloadTracker):
         self.output_dir = output_dir
         self.tracker = tracker
-        self.playlist_as_album = playlist_as_album
-        self.all_videos_dir = output_dir / "_all_videos"
-        self.all_videos_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_dir = None
 
-    def _get_ydl_opts(self, output_dir: Path, filename_template: str, album: str | None = None) -> dict[str, Any]:
+    def _create_temp_dir(self) -> Path:
+        """Create a temporary directory for downloads."""
+        if self.temp_dir is None:
+            self.temp_dir = Path(tempfile.mkdtemp(prefix="yt_download_"))
+        return self.temp_dir
+
+    def _cleanup_temp_dir(self) -> None:
+        """Clean up the temporary directory."""
+        if self.temp_dir and self.temp_dir.exists():
+            try:
+                shutil.rmtree(self.temp_dir)
+                self.temp_dir = None
+            except OSError as e:
+                print(f"Warning: Could not clean up temp directory {self.temp_dir}: {e}", file=sys.stderr)
+
+    def _get_ydl_opts(self, output_dir: Path, video_folder: str) -> dict[str, Any]:
         """Build yt-dlp options for audio download with metadata."""
-        opts = {
-            "paths": {"home": str(output_dir)},
-            "outtmpl": {"default": filename_template},
+        return {
+            "paths": {"home": str(output_dir / video_folder)},
+            "outtmpl": {"default": "%(id)s - %(title)s.%(ext)s"},
             "format": "bestaudio/best",
             "postprocessors": [
                 {
@@ -82,17 +98,11 @@ class YouTubePuller:
                 {"key": "EmbedThumbnail"},
             ],
             "writethumbnail": True,
-            "writeinfojson": False,
+            "writeinfojson": True,
             "ignoreerrors": True,
             "no_warnings": False,
             "extract_flat": False,
         }
-
-        # Add album metadata if specified
-        if album:
-            opts["postprocessor_args"] = {"ffmpeg": ["-metadata", f"album={album}"]}
-
-        return opts
 
     def _extract_info(self, url: str, extract_flat: bool = False) -> dict[str, Any] | None:
         """Extract video/playlist information."""
@@ -116,47 +126,97 @@ class YouTubePuller:
             name = name.replace(char, "_")
         return name.strip()[:200]
 
-    def _download_video(self, video_id: str, video_title: str = "", album: str | None = None) -> str | None:
-        """
-        Download a single video as audio to the _all_videos directory.
-        Filename format: Title.VIDEO_ID.opus
-        Returns the filename if successful, None otherwise.
-        """
-        if self.tracker.is_downloaded(video_id):
-            print(f"  Already downloaded: {video_id}")
-            return self.tracker.get_filename(video_id)
-
+    def _extract_video_title(self, video_id: str, video_title: str = "") -> str | None:
+        """Extract video title from YouTube."""
         video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-        # First extract info to get the title
         try:
             with YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
                 info = ydl.extract_info(video_url, download=False)
                 if not info:
                     return None
-                title = info.get("title", video_title or "Unknown")
+                return info.get("title", video_title or "Unknown")
         except Exception as e:
             print(f"  ✗ Error extracting info for {video_id}: {e}", file=sys.stderr)
             return None
 
-        # Create filename: Title.VIDEO_ID.ext
-        sanitized_title = self._sanitize_name(title)
-        filename_template = f"{sanitized_title}.{video_id}.%(ext)s"
-        ydl_opts = self._get_ydl_opts(self.all_videos_dir, filename_template, album=album)
-
+    def _download_to_temp(self, video_url: str, temp_video_dir: Path, folder_name: str) -> bool:
+        """Download video to temporary directory."""
+        ydl_opts = self._get_ydl_opts(temp_video_dir.parent, folder_name)
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
+            return True
+        except Exception as e:
+            print(f"  ✗ Error downloading: {e}", file=sys.stderr)
+            return False
 
-                # The final filename will be Title.VIDEO_ID.opus
-                final_filename = f"{sanitized_title}.{video_id}.opus"
-                self.tracker.mark_downloaded(video_id, final_filename)
-                print(f"  ✓ Downloaded: {final_filename}")
-                return final_filename
+    def _verify_and_move_files(self, video_id: str, temp_video_dir: Path, final_file: Path) -> bool:
+        """Verify .opus file exists and move to final location."""
+        # Check if .opus file was created successfully
+        opus_files = list(temp_video_dir.glob("*.opus"))
+        if not opus_files:
+            print(f"  ✗ No .opus file created for {video_id}", file=sys.stderr)
+            return False
+
+        # Move the .opus file to final location
+        opus_file = opus_files[0]  # Take the first (and should be only) .opus file
+        if final_file.exists():
+            final_file.unlink()
+        shutil.move(str(opus_file), str(final_file))
+
+        # Verify the .opus file exists in the final location
+        if not final_file.exists():
+            print(f"  ✗ .opus file not found in final location for {video_id}", file=sys.stderr)
+            return False
+
+        return True
+
+    def _download_video(self, video_id: str, video_title: str = "") -> str | None:
+        """
+        Download a single video as audio to the output directory.
+        Returns the filename if successful, None otherwise.
+        """
+        if self.tracker.is_downloaded(video_id):
+            print(f"  Already downloaded: {video_id}")
+            return self.tracker.get_dirname(video_id)
+
+        # Extract video title
+        title = self._extract_video_title(video_id, video_title)
+        if not title:
+            return None
+
+        # Create filename
+        filename = f"{self._sanitize_name(title)}.{video_id}.opus"
+        final_file = self.output_dir / filename
+        temp_dir = self._create_temp_dir()
+        temp_video_dir = temp_dir / f"{self._sanitize_name(title)}.{video_id}"
+
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        try:
+            # Download to temporary directory
+            if not self._download_to_temp(video_url, temp_video_dir, f"{self._sanitize_name(title)}.{video_id}"):
+                return None
+
+            # Verify and move files
+            if not self._verify_and_move_files(video_id, temp_video_dir, final_file):
+                return None
+
+            # Only mark as downloaded if everything succeeded
+            self.tracker.mark_downloaded(video_id, filename)
+            print(f"  ✓ Downloaded: {filename}")
+            return filename
 
         except Exception as e:
             print(f"  ✗ Error downloading {video_id}: {e}", file=sys.stderr)
+            # Clean up any partial files
+            if final_file.exists():
+                final_file.unlink()
             return None
+        finally:
+            # Clean up temporary directory for this video
+            if temp_video_dir.exists():
+                shutil.rmtree(temp_video_dir)
 
     def pull_single_video(self, url: str) -> None:
         """Download a single video."""
@@ -190,23 +250,15 @@ class YouTubePuller:
 
         playlist_title = info.get("title", "Unknown Playlist")
         entries = info.get("entries", [])
-
         if not entries:
             print("No videos found in playlist")
             return
 
         print(f"Playlist: {playlist_title}")
         print(f"Found {len(entries)} videos")
-
-        # Use playlist title as album if option is enabled
-        album = playlist_title if self.playlist_as_album else None
-        if album:
-            print(f"Album metadata will be set to: {album}")
+        print(f"Output directory: {self.output_dir}")
 
         # Download each video
-        downloaded_count = 0
-        skipped_count = 0
-
         for i, entry in enumerate(entries, 1):
             if not entry:
                 continue
@@ -220,20 +272,11 @@ class YouTubePuller:
 
             print(f"\n[{i}/{len(entries)}] {video_title} ({video_id})")
 
-            # Download to _all_videos with album metadata if enabled
-            was_already_downloaded = self.tracker.is_downloaded(video_id)
-            filename = self._download_video(video_id, video_title, album=album)
-
-            if filename:
-                if was_already_downloaded:
-                    skipped_count += 1
-                else:
-                    downloaded_count += 1
+            # Download video
+            self._download_video(video_id, video_title)
 
         print(f"\n✓ Finished processing playlist: {playlist_title}")
         print(f"  Total videos in playlist: {len(entries)}")
-        print(f"  Downloaded: {downloaded_count}")
-        print(f"  Skipped (already downloaded): {skipped_count}")
 
     def pull(self, url: str) -> None:
         """Pull content from URL (auto-detect if video or playlist)."""
@@ -257,11 +300,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-file", required=True, type=Path, help="Path to history file (JSON) for tracking downloaded videos"
     )
-    parser.add_argument(
-        "--playlist-as-album",
-        action="store_true",
-        help="Set playlist title as album metadata for all videos in the playlist",
-    )
     return parser.parse_args()
 
 
@@ -271,10 +309,14 @@ def main():
 
     # Initialize tracker and puller
     tracker = DownloadTracker(args.history_file)
-    puller = YouTubePuller(args.output_dir, tracker, playlist_as_album=args.playlist_as_album)
+    puller = YouTubePuller(args.output_dir, tracker)
 
-    # Pull content
-    puller.pull(args.url)
+    try:
+        # Pull content
+        puller.pull(args.url)
+    finally:
+        # Clean up temporary directory at the end of the run
+        puller._cleanup_temp_dir()
 
     print("\n" + "=" * 60)
     print("Download complete!")
