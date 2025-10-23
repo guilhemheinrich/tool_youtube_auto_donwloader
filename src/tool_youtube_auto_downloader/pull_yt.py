@@ -10,10 +10,26 @@ import json
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
 from yt_dlp import YoutubeDL
+
+
+class DownloadedVideo(BaseModel):
+    """Represents a successfully downloaded video with metadata."""
+
+    video_id: str = Field(..., description="YouTube video ID")
+    title: str = Field(..., description="Original video title")
+    filename: str = Field(..., description="Downloaded filename")
+    download_date: datetime = Field(default_factory=datetime.now, description="Date when the video was downloaded")
+    album: str | None = Field(None, description="Album name if available")
+    artist: str | None = Field(None, description="Artist name if available")
+
+    class Config:
+        json_encoders = {datetime: lambda v: v.isoformat()}
 
 
 class DownloadTracker:
@@ -21,41 +37,103 @@ class DownloadTracker:
 
     def __init__(self, history_file: Path):
         self.history_file = history_file
-        self.downloaded_videos: dict[str, str] = self._load_history()
+        self.downloaded_videos: list[DownloadedVideo] = self._load_history()
 
-    def _load_history(self) -> dict[str, str]:
-        """Load previously downloaded video IDs and their directory names from history file."""
+    def _load_history(self) -> list[DownloadedVideo]:
+        """Load previously downloaded videos from history file."""
         if not self.history_file.exists():
-            return {}
+            return []
         try:
             with open(self.history_file, encoding="utf-8") as f:
                 data = json.load(f)
-                return data.get("downloaded_videos", {})
-        except (json.JSONDecodeError, OSError):
-            print(f"Warning: Could not load history from {self.history_file}", file=sys.stderr)
-            return {}
+                if "downloaded_videos" in data and isinstance(data["downloaded_videos"], list):
+                    # Convert ISO date strings back to datetime objects
+                    videos = []
+                    for video_data in data["downloaded_videos"]:
+                        # Convert ISO date string back to datetime if it's a string
+                        if isinstance(video_data.get("download_date"), str):
+                            try:
+                                video_data["download_date"] = datetime.fromisoformat(video_data["download_date"])
+                            except ValueError:
+                                # If parsing fails, use current time
+                                video_data["download_date"] = datetime.now()
+                        videos.append(DownloadedVideo(**video_data))
+                    return videos
+                return []
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: Could not load history from {self.history_file}: {e}", file=sys.stderr)
+            return []
 
     def _save_history(self) -> None:
-        """Save downloaded video IDs and directory names to history file."""
+        """Save downloaded videos to history file."""
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.history_file, "w", encoding="utf-8") as f:
-                json.dump({"downloaded_videos": self.downloaded_videos}, f, indent=2)
+                # Convert datetime objects to ISO strings for JSON serialization
+                videos_data = []
+                for video in self.downloaded_videos:
+                    video_dict = video.model_dump()
+                    # Convert datetime to ISO string
+                    if "download_date" in video_dict:
+                        video_dict["download_date"] = video_dict["download_date"].isoformat()
+                    videos_data.append(video_dict)
+
+                json.dump({"downloaded_videos": videos_data}, f, indent=2)
         except OSError as e:
             print(f"Warning: Could not save history: {e}", file=sys.stderr)
 
     def is_downloaded(self, video_id: str) -> bool:
         """Check if a video ID has already been downloaded."""
-        return video_id in self.downloaded_videos
+        return any(video.video_id == video_id for video in self.downloaded_videos)
 
-    def get_dirname(self, video_id: str) -> str | None:
-        """Get the directory name for a downloaded video ID."""
-        return self.downloaded_videos.get(video_id)
+    def get_filename(self, video_id: str) -> str | None:
+        """Get the filename for a downloaded video ID."""
+        for video in self.downloaded_videos:
+            if video.video_id == video_id:
+                return video.filename
+        return None
 
-    def mark_downloaded(self, video_id: str, dirname: str) -> None:
-        """Mark a video ID as downloaded with its directory name and save to history."""
-        self.downloaded_videos[video_id] = dirname
+    def mark_downloaded(
+        self, video_id: str, title: str, filename: str, album: str | None = None, artist: str | None = None
+    ) -> None:
+        """Mark a video ID as downloaded with its metadata and save to history."""
+        # Remove any existing entry for this video_id
+        self.downloaded_videos = [v for v in self.downloaded_videos if v.video_id != video_id]
+
+        # Add new entry
+        new_video = DownloadedVideo(video_id=video_id, title=title, filename=filename, album=album, artist=artist)
+        self.downloaded_videos.append(new_video)
         self._save_history()
+
+    def get_downloaded_videos(self) -> list[DownloadedVideo]:
+        """Get all downloaded videos."""
+        return self.downloaded_videos.copy()
+
+    def get_video_by_id(self, video_id: str) -> DownloadedVideo | None:
+        """Get a specific downloaded video by ID."""
+        for video in self.downloaded_videos:
+            if video.video_id == video_id:
+                return video
+        return None
+
+    def print_history(self) -> None:
+        """Print a formatted history of downloaded videos."""
+        if not self.downloaded_videos:
+            print("No videos downloaded yet.")
+            return
+
+        print(f"\nDownload History ({len(self.downloaded_videos)} videos):")
+        print("-" * 80)
+        for video in sorted(self.downloaded_videos, key=lambda v: v.download_date, reverse=True):
+            print(f"ID: {video.video_id}")
+            print(f"Title: {video.title}")
+            print(f"Filename: {video.filename}")
+            print(f"Download Date: {video.download_date.strftime('%Y-%m-%d %H:%M:%S')}")
+            if video.album:
+                print(f"Album: {video.album}")
+            if video.artist:
+                print(f"Artist: {video.artist}")
+            print("-" * 80)
 
 
 class YouTubePuller:
@@ -102,6 +180,13 @@ class YouTubePuller:
             "ignoreerrors": True,
             "no_warnings": False,
             "extract_flat": False,
+            # Anti-detection options to avoid 403 errors
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "referer": "https://www.youtube.com/",
+            "sleep_interval": 1,
+            "max_sleep_interval": 5,
+            "sleep_interval_requests": 1,
+            "sleep_interval_subtitles": 1,
         }
 
     def _extract_info(self, url: str, extract_flat: bool = False) -> dict[str, Any] | None:
@@ -110,6 +195,11 @@ class YouTubePuller:
             "quiet": True,
             "extract_flat": "in_playlist" if extract_flat else False,
             "skip_download": True,
+            # Anti-detection options to avoid 403 errors
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "referer": "https://www.youtube.com/",
+            "sleep_interval": 1,
+            "max_sleep_interval": 5,
         }
 
         try:
@@ -125,19 +215,6 @@ class YouTubePuller:
         for char in invalid_chars:
             name = name.replace(char, "_")
         return name.strip()[:200]
-
-    def _extract_video_title(self, video_id: str, video_title: str = "") -> str | None:
-        """Extract video title from YouTube."""
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-        try:
-            with YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                if not info:
-                    return None
-                return info.get("title", video_title or "Unknown")
-        except Exception as e:
-            print(f"  ✗ Error extracting info for {video_id}: {e}", file=sys.stderr)
-            return None
 
     def _download_to_temp(self, video_url: str, temp_video_dir: Path, folder_name: str) -> bool:
         """Download video to temporary directory."""
@@ -171,19 +248,64 @@ class YouTubePuller:
 
         return True
 
-    def _download_video(self, video_id: str, video_title: str = "") -> str | None:
+    def _extract_metadata(self, video_id: str) -> dict[str, Any] | None:
+        """Extract video metadata including title, album, and artist."""
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        try:
+            ydl_opts = {
+                "quiet": True,
+                "skip_download": True,
+                # Anti-detection options to avoid 403 errors
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "referer": "https://www.youtube.com/",
+                "sleep_interval": 1,
+                "max_sleep_interval": 5,
+            }
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                if not info:
+                    return None
+
+                # Extract metadata
+                metadata = {"title": info.get("title", "Unknown"), "album": None, "artist": None}
+
+                # Try to extract album and artist from various sources
+                if "album" in info:
+                    metadata["album"] = info["album"]
+                elif "album" in info.get("tags", []):
+                    metadata["album"] = info["tags"]["album"]
+
+                if "artist" in info:
+                    metadata["artist"] = info["artist"]
+                elif "uploader" in info:
+                    metadata["artist"] = info["uploader"]
+                elif "creator" in info:
+                    metadata["artist"] = info["creator"]
+                elif "artist" in info.get("tags", []):
+                    metadata["artist"] = info["tags"]["artist"]
+
+                return metadata
+        except Exception as e:
+            print(f"  ✗ Error extracting metadata for {video_id}: {e}", file=sys.stderr)
+            return None
+
+    def _download_video(self, video_id: str) -> str | None:
         """
         Download a single video as audio to the output directory.
         Returns the filename if successful, None otherwise.
         """
         if self.tracker.is_downloaded(video_id):
             print(f"  Already downloaded: {video_id}")
-            return self.tracker.get_dirname(video_id)
+            return self.tracker.get_filename(video_id)
 
-        # Extract video title
-        title = self._extract_video_title(video_id, video_title)
-        if not title:
+        # Extract video metadata
+        metadata = self._extract_metadata(video_id)
+        if not metadata:
             return None
+
+        title = metadata["title"]
+        album = metadata["album"]
+        artist = metadata["artist"]
 
         # Create filename
         filename = f"{self._sanitize_name(title)}.{video_id}.opus"
@@ -203,12 +325,16 @@ class YouTubePuller:
                 return None
 
             # Only mark as downloaded if everything succeeded
-            self.tracker.mark_downloaded(video_id, filename)
-            print(f"  ✓ Downloaded: {filename}")
+            self.tracker.mark_downloaded(video_id, title, filename, album, artist)
+            print(f"  [OK] Downloaded: {filename}")
+            if album:
+                print(f"    Album: {album}")
+            if artist:
+                print(f"    Artist: {artist}")
             return filename
 
         except Exception as e:
-            print(f"  ✗ Error downloading {video_id}: {e}", file=sys.stderr)
+            print(f"  [ERROR] Error downloading {video_id}: {e}", file=sys.stderr)
             # Clean up any partial files
             if final_file.exists():
                 final_file.unlink()
@@ -235,7 +361,7 @@ class YouTubePuller:
 
         print(f"Video: {info.get('title', 'Unknown')}")
         self._download_video(video_id)
-        print("\n✓ Finished processing video")
+        print("\n[OK] Finished processing video")
 
     def pull_playlist(self, url: str) -> None:
         """Download all videos from a playlist."""
@@ -273,9 +399,9 @@ class YouTubePuller:
             print(f"\n[{i}/{len(entries)}] {video_title} ({video_id})")
 
             # Download video
-            self._download_video(video_id, video_title)
+            self._download_video(video_id)
 
-        print(f"\n✓ Finished processing playlist: {playlist_title}")
+        print(f"\n[OK] Finished processing playlist: {playlist_title}")
         print(f"  Total videos in playlist: {len(entries)}")
 
     def pull(self, url: str) -> None:
@@ -319,7 +445,7 @@ def main():
         puller._cleanup_temp_dir()
 
     print("\n" + "=" * 60)
-    print("Download complete!")
+    print("[OK] Download complete!")
     print(f"Total videos in library: {len(tracker.downloaded_videos)}")
     print("=" * 60)
 
