@@ -18,11 +18,127 @@ from pydantic import BaseModel, Field
 from yt_dlp import YoutubeDL
 
 
+class FileOrganizer:
+    """Handles automatic file organization based on metadata and context."""
+
+    def __init__(self, output_dir: Path, flat_import: bool = False):
+        self.output_dir = output_dir
+        self.flat_import = flat_import
+
+    def _sanitize_name(self, name: str) -> str:
+        """Sanitize name for use as directory/file name."""
+        invalid_chars = '<>:"/\\|?*'
+        for char in invalid_chars:
+            name = name.replace(char, "_")
+        return name.strip()[:200]
+
+    def _clean_title(self, title: str, artist: str | None) -> str:
+        """
+        Clean the title by removing the artist name if it appears at the beginning.
+
+        Args:
+            title: The original title
+            artist: The artist name (if available)
+
+        Returns:
+            Cleaned title without artist name
+        """
+        if not artist:
+            return title
+
+        # Remove artist name from the beginning of the title
+        # Handle various separators: " - ", " – ", " — ", " | ", " : "
+        separators = [" - ", " – ", " — ", " | ", " : "]
+
+        for separator in separators:
+            if title.startswith(f"{artist}{separator}"):
+                return title[len(f"{artist}{separator}") :].strip()
+
+        # Also try without separator (direct concatenation)
+        if title.startswith(artist):
+            # Check if there's a space or other separator after the artist name
+            remaining = title[len(artist) :].strip()
+            if remaining and (remaining.startswith(" ") or remaining.startswith("-") or remaining.startswith("–")):
+                # Remove leading spaces, dashes, etc.
+                return remaining.lstrip(" -–").strip()
+
+        return title
+
+    def get_target_path(self, filename: str, metadata: dict[str, Any], playlist_title: str | None = None) -> Path:
+        """
+        Determine the target path for a file based on metadata and context.
+
+        Args:
+            filename: The filename to organize
+            metadata: Dictionary containing 'artist', 'album', 'title' keys
+            playlist_title: Title of the playlist if the file comes from a playlist
+
+        Returns:
+            Path object representing where the file should be stored
+        """
+        if self.flat_import:
+            return self.output_dir / filename
+
+        artist = metadata.get("artist")
+        album = metadata.get("album")
+
+        # Case 1: Has both artist and album metadata
+        if artist and album:
+            artist_dir = self._sanitize_name(artist)
+            album_dir = self._sanitize_name(album)
+            return self.output_dir / artist_dir / album_dir / filename
+
+        # Case 2: Has artist but no album
+        elif artist:
+            artist_dir = self._sanitize_name(artist)
+            if playlist_title:
+                # Case 3: In playlist with artist but no album
+                playlist_dir = self._sanitize_name(playlist_title)
+                return self.output_dir / artist_dir / playlist_dir / filename
+            else:
+                # Case 2: Artist but no album, not in playlist
+                return self.output_dir / artist_dir / "singles" / filename
+
+        # Case 4: No metadata at all
+        else:
+            return self.output_dir / "_singles" / filename
+
+    def organize_file(self, source_path: Path, target_path: Path) -> bool:
+        """
+        Move a file from source to target path, creating directories as needed.
+
+        Args:
+            source_path: Current location of the file
+            target_path: Desired location of the file
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Create target directory if it doesn't exist
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # If target file already exists, remove it
+            if target_path.exists():
+                target_path.unlink()
+
+            # Move the file
+            shutil.move(str(source_path), str(target_path))
+            return True
+
+        except Exception as e:
+            print(f"  ✗ Error organizing file {source_path} to {target_path}: {e}", file=sys.stderr)
+            return False
+
+
 def get_ydl_base_opts() -> dict[str, Any]:
     """Get base yt-dlp options with anti-detection settings."""
     return {
         # Anti-detection options to avoid 403 errors
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ),
         "referer": "https://www.youtube.com/",
         "sleep_interval": 1,
         "max_sleep_interval": 5,
@@ -150,9 +266,10 @@ class DownloadTracker:
 class YouTubePuller:
     """Handles pulling and downloading YouTube content."""
 
-    def __init__(self, output_dir: Path, tracker: DownloadTracker):
+    def __init__(self, output_dir: Path, tracker: DownloadTracker, flat_import: bool = False):
         self.output_dir = output_dir
         self.tracker = tracker
+        self.organizer = FileOrganizer(output_dir, flat_import)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir = None
 
@@ -295,7 +412,7 @@ class YouTubePuller:
             print(f"  ✗ Error extracting metadata for {video_id}: {e}", file=sys.stderr)
             return None
 
-    def _download_video(self, video_id: str) -> str | None:
+    def _download_video(self, video_id: str, playlist_title: str | None = None) -> str | None:
         """
         Download a single video as audio to the output directory.
         Returns the filename if successful, None otherwise.
@@ -313,37 +430,48 @@ class YouTubePuller:
         album = metadata["album"]
         artist = metadata["artist"]
 
+        # Clean title by removing artist name if present
+        clean_title = self.organizer._clean_title(title, artist)
+
         # Create filename
-        filename = f"{self._sanitize_name(title)}.opus"
-        final_file = self.output_dir / filename
+        filename = f"{self._sanitize_name(clean_title)}.opus"
+
+        # Determine target path using organizer
+        target_path = self.organizer.get_target_path(filename, metadata, playlist_title)
         temp_dir = self._create_temp_dir()
-        temp_video_dir = temp_dir / f"{self._sanitize_name(title)}.{video_id}"
+        temp_video_dir = temp_dir / f"{self._sanitize_name(clean_title)}.{video_id}"
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
 
         try:
             # Download to temporary directory
-            if not self._download_to_temp(video_url, temp_video_dir, f"{self._sanitize_name(title)}.{video_id}"):
+            if not self._download_to_temp(video_url, temp_video_dir, f"{self._sanitize_name(clean_title)}.{video_id}"):
                 return None
 
-            # Verify and move files
-            if not self._verify_and_move_files(video_id, temp_video_dir, final_file):
+            # Verify and move files to temporary location first
+            temp_final_file = self.output_dir / filename
+            if not self._verify_and_move_files(video_id, temp_video_dir, temp_final_file):
+                return None
+
+            # Organize file to final location
+            if not self.organizer.organize_file(temp_final_file, target_path):
                 return None
 
             # Only mark as downloaded if everything succeeded
-            self.tracker.mark_downloaded(video_id, title, filename, album, artist)
-            print(f"  ✓ Downloaded: {filename}")
+            self.tracker.mark_downloaded(video_id, clean_title, target_path.name, album, artist)
+            print(f"  ✓ Downloaded: {target_path.name}")
+            print(f"    Location: {target_path.relative_to(self.output_dir)}")
             if album:
                 print(f"    Album: {album}")
             if artist:
                 print(f"    Artist: {artist}")
-            return filename
+            return target_path.name
 
         except Exception as e:
             print(f"  ✗ Error downloading {video_id}: {e}", file=sys.stderr)
             # Clean up any partial files
-            if final_file.exists():
-                final_file.unlink()
+            if target_path.exists():
+                target_path.unlink()
             return None
         finally:
             # Clean up temporary directory for this video
@@ -405,7 +533,7 @@ class YouTubePuller:
             print(f"\n[{i}/{len(entries)}] {video_title} ({video_id})")
 
             # Download video
-            self._download_video(video_id)
+            self._download_video(video_id, playlist_title)
 
         print(f"\n✓ Finished processing playlist: {playlist_title}")
         print(f"  Total videos in playlist: {len(entries)}")
@@ -432,6 +560,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-file", required=True, type=Path, help="Path to history file (JSON) for tracking downloaded videos"
     )
+    parser.add_argument(
+        "--flat-import",
+        action="store_true",
+        help="Disable automatic file organization (store all files in root directory)",
+    )
     return parser.parse_args()
 
 
@@ -441,7 +574,7 @@ def main():
 
     # Initialize tracker and puller
     tracker = DownloadTracker(args.history_file)
-    puller = YouTubePuller(args.output_dir, tracker)
+    puller = YouTubePuller(args.output_dir, tracker, flat_import=args.flat_import)
 
     try:
         # Pull content

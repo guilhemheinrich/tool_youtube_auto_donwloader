@@ -74,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         "--urls-file", required=True, type=Path, help="Path to file containing YouTube URLs (one per line)"
     )
     parser.add_argument("--config", required=True, type=Path, help="Path to configuration file (YAML)")
+    parser.add_argument(
+        "--flat-import",
+        action="store_true",
+        help="Disable automatic file organization (store all files in root directory)",
+    )
     return parser.parse_args()
 
 
@@ -104,7 +109,7 @@ def main():
 
     # Initialize tracker and puller
     tracker = DownloadTracker(history_file)
-    puller = YouTubePuller(output_dir, tracker)
+    puller = YouTubePuller(output_dir, tracker, flat_import=args.flat_import)
 
     # Process each URL
     for i, url in enumerate(urls, 1):
