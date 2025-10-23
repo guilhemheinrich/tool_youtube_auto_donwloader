@@ -18,6 +18,17 @@ from pydantic import BaseModel, Field
 from yt_dlp import YoutubeDL
 
 
+def get_ydl_base_opts() -> dict[str, Any]:
+    """Get base yt-dlp options with anti-detection settings."""
+    return {
+        # Anti-detection options to avoid 403 errors
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "referer": "https://www.youtube.com/",
+        "sleep_interval": 1,
+        "max_sleep_interval": 5,
+    }
+
+
 class DownloadedVideo(BaseModel):
     """Represents a successfully downloaded video with metadata."""
 
@@ -162,45 +173,42 @@ class YouTubePuller:
 
     def _get_ydl_opts(self, output_dir: Path, video_folder: str) -> dict[str, Any]:
         """Build yt-dlp options for audio download with metadata."""
-        return {
-            "paths": {"home": str(output_dir / video_folder)},
-            "outtmpl": {"default": "%(id)s - %(title)s.%(ext)s"},
-            "format": "bestaudio/best",
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "opus",
-                    "preferredquality": "0",
-                },
-                {"key": "FFmpegMetadata"},
-                {"key": "EmbedThumbnail"},
-            ],
-            "writethumbnail": True,
-            "writeinfojson": True,
-            "ignoreerrors": True,
-            "no_warnings": False,
-            "extract_flat": False,
-            # Anti-detection options to avoid 403 errors
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "referer": "https://www.youtube.com/",
-            "sleep_interval": 1,
-            "max_sleep_interval": 5,
-            "sleep_interval_requests": 1,
-            "sleep_interval_subtitles": 1,
-        }
+        opts = get_ydl_base_opts()
+        opts.update(
+            {
+                "paths": {"home": str(output_dir / video_folder)},
+                "outtmpl": {"default": "%(id)s - %(title)s.%(ext)s"},
+                "format": "bestaudio/best",
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "opus",
+                        "preferredquality": "0",
+                    },
+                    {"key": "FFmpegMetadata"},
+                    {"key": "EmbedThumbnail"},
+                ],
+                "writethumbnail": True,
+                "writeinfojson": True,
+                "ignoreerrors": True,
+                "no_warnings": False,
+                "extract_flat": False,
+                "sleep_interval_requests": 1,
+                "sleep_interval_subtitles": 1,
+            }
+        )
+        return opts
 
     def _extract_info(self, url: str, extract_flat: bool = False) -> dict[str, Any] | None:
         """Extract video/playlist information."""
-        ydl_opts = {
-            "quiet": True,
-            "extract_flat": "in_playlist" if extract_flat else False,
-            "skip_download": True,
-            # Anti-detection options to avoid 403 errors
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "referer": "https://www.youtube.com/",
-            "sleep_interval": 1,
-            "max_sleep_interval": 5,
-        }
+        ydl_opts = get_ydl_base_opts()
+        ydl_opts.update(
+            {
+                "quiet": True,
+                "extract_flat": "in_playlist" if extract_flat else False,
+                "skip_download": True,
+            }
+        )
 
         try:
             with YoutubeDL(ydl_opts) as ydl:
@@ -252,15 +260,13 @@ class YouTubePuller:
         """Extract video metadata including title, album, and artist."""
         video_url = f"https://www.youtube.com/watch?v={video_id}"
         try:
-            ydl_opts = {
-                "quiet": True,
-                "skip_download": True,
-                # Anti-detection options to avoid 403 errors
-                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "referer": "https://www.youtube.com/",
-                "sleep_interval": 1,
-                "max_sleep_interval": 5,
-            }
+            ydl_opts = get_ydl_base_opts()
+            ydl_opts.update(
+                {
+                    "quiet": True,
+                    "skip_download": True,
+                }
+            )
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
                 if not info:
@@ -308,7 +314,7 @@ class YouTubePuller:
         artist = metadata["artist"]
 
         # Create filename
-        filename = f"{self._sanitize_name(title)}.{video_id}.opus"
+        filename = f"{self._sanitize_name(title)}.opus"
         final_file = self.output_dir / filename
         temp_dir = self._create_temp_dir()
         temp_video_dir = temp_dir / f"{self._sanitize_name(title)}.{video_id}"
@@ -326,7 +332,7 @@ class YouTubePuller:
 
             # Only mark as downloaded if everything succeeded
             self.tracker.mark_downloaded(video_id, title, filename, album, artist)
-            print(f"  [OK] Downloaded: {filename}")
+            print(f"  ✓ Downloaded: {filename}")
             if album:
                 print(f"    Album: {album}")
             if artist:
@@ -334,7 +340,7 @@ class YouTubePuller:
             return filename
 
         except Exception as e:
-            print(f"  [ERROR] Error downloading {video_id}: {e}", file=sys.stderr)
+            print(f"  ✗ Error downloading {video_id}: {e}", file=sys.stderr)
             # Clean up any partial files
             if final_file.exists():
                 final_file.unlink()
@@ -361,7 +367,7 @@ class YouTubePuller:
 
         print(f"Video: {info.get('title', 'Unknown')}")
         self._download_video(video_id)
-        print("\n[OK] Finished processing video")
+        print("\n✓ Finished processing video")
 
     def pull_playlist(self, url: str) -> None:
         """Download all videos from a playlist."""
@@ -401,7 +407,7 @@ class YouTubePuller:
             # Download video
             self._download_video(video_id)
 
-        print(f"\n[OK] Finished processing playlist: {playlist_title}")
+        print(f"\n✓ Finished processing playlist: {playlist_title}")
         print(f"  Total videos in playlist: {len(entries)}")
 
     def pull(self, url: str) -> None:
@@ -445,7 +451,7 @@ def main():
         puller._cleanup_temp_dir()
 
     print("\n" + "=" * 60)
-    print("[OK] Download complete!")
+    print("Download complete!")
     print(f"Total videos in library: {len(tracker.downloaded_videos)}")
     print("=" * 60)
 
