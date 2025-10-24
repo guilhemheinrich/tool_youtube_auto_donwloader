@@ -8,7 +8,6 @@ All .opus files are stored directly in the output directory.
 import argparse
 import json
 import shutil
-import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -17,6 +16,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 from yt_dlp import YoutubeDL
+
+try:
+    from mutagen import File as MutagenFile
+
+    MUTAGEN_AVAILABLE = True
+except ImportError:
+    MUTAGEN_AVAILABLE = False
 
 
 class FileOrganizer:
@@ -51,11 +57,12 @@ class FileOrganizer:
         # Handle various separators: " - ", " – ", " — ", " | ", " : "
         separators = [" - ", " – ", " — ", " | ", " : "]
 
+        # First, try exact match with separators
         for separator in separators:
             if title.startswith(f"{artist}{separator}"):
                 return title[len(f"{artist}{separator}") :].strip()
 
-        # Also try without separator (direct concatenation)
+        # Try without separator (direct concatenation)
         if title.startswith(artist):
             # Check if there's a space or other separator after the artist name
             remaining = title[len(artist) :].strip()
@@ -63,7 +70,36 @@ class FileOrganizer:
                 # Remove leading spaces, dashes, etc.
                 return remaining.lstrip(" -–").strip()
 
+        # Handle case where artist has no spaces but title does (e.g., "FosterThePeople" vs "Foster The People")
+        # Create a version of artist with spaces inserted between words
+        artist_with_spaces = self._add_spaces_to_artist(artist)
+        if artist_with_spaces != artist:
+            for separator in separators:
+                if title.startswith(f"{artist_with_spaces}{separator}"):
+                    return title[len(f"{artist_with_spaces}{separator}") :].strip()
+
+            # Try without separator
+            if title.startswith(artist_with_spaces):
+                remaining = title[len(artist_with_spaces) :].strip()
+                if remaining and (remaining.startswith(" ") or remaining.startswith("-") or remaining.startswith("–")):
+                    return remaining.lstrip(" -–").strip()
+
         return title
+
+    def _add_spaces_to_artist(self, artist: str) -> str:
+        """Add spaces to artist name to handle cases like 'FosterThePeople' -> 'Foster The People'."""
+        if not artist or " " in artist:
+            return artist
+
+        # Simple heuristic: add spaces before capital letters (except the first one)
+        result = artist[0]
+        for i in range(1, len(artist)):
+            if artist[i].isupper() and artist[i - 1].islower():
+                result += " " + artist[i]
+            else:
+                result += artist[i]
+
+        return result
 
     def get_target_path(self, filename: str, metadata: dict[str, Any], playlist_title: str | None = None) -> Path:
         """
@@ -302,20 +338,10 @@ class YouTubePuller:
             {"key": "EmbedThumbnail"},
         ]
 
-        # Add custom metadata postprocessor if custom title is provided
-        if custom_title:
-            postprocessors.append(
-                {
-                    "key": "FFmpegMetadata",
-                    "add_metadata": True,
-                    "add_chapters": False,
-                }
-            )
-
         opts.update(
             {
                 "paths": {"home": str(output_dir / video_folder)},
-                "outtmpl": {"default": "%(id)s - %(title)s.%(ext)s"},
+                "outtmpl": {"default": "%(id)s.%(ext)s"},
                 "format": "bestaudio/best",
                 "postprocessors": postprocessors,
                 "writethumbnail": True,
@@ -362,53 +388,33 @@ class YouTubePuller:
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
+                print(f"Files in {temp_video_dir.parent}:")
+                for file in temp_video_dir.parent.iterdir():
+                    print(f"  - {file.name}")
             return True
         except Exception as e:
             print(f"  ✗ Error downloading: {e}", file=sys.stderr)
             return False
 
-    def _modify_metadata(self, file_path: Path, new_title: str) -> bool:
-        """Modify the title metadata of an audio file using ffmpeg."""
+    def _modify_metadata_mutagen(self, file_path: Path, new_title: str) -> bool:
+        """Modify the title metadata of an audio file using mutagen."""
+        if not MUTAGEN_AVAILABLE:
+            print(f"  ⚠ Warning: mutagen not available, cannot modify metadata for {file_path.name}")
+            return False
+
         try:
-            # Create a temporary file with a simple name
-            temp_file = file_path.parent / "temp_metadata.opus"
-
-            # Escape the title for ffmpeg command line
-            escaped_title = new_title.replace('"', '\\"').replace("'", "\\'")
-
-            # Use ffmpeg to modify the title metadata
-            cmd = [
-                "ffmpeg",
-                "-i",
-                str(file_path),
-                "-c",
-                "copy",
-                "-metadata",
-                f"title={escaped_title}",
-                "-y",  # Overwrite output file
-                str(temp_file),
-            ]
-
-            # Run ffmpeg command
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode == 0 and temp_file.exists():
-                # Replace original file with modified version
-                shutil.move(str(temp_file), str(file_path))
-                return True
-            else:
-                print(f"  ✗ Error modifying metadata: {result.stderr}", file=sys.stderr)
-                print(f"  Command: {' '.join(cmd)}", file=sys.stderr)
-                # Clean up temp file if it exists
-                if temp_file.exists():
-                    temp_file.unlink()
+            audio_file = MutagenFile(str(file_path))
+            if audio_file is None:
+                print(f"  ✗ Cannot read audio file: {file_path}")
                 return False
 
+            # Set the title metadata
+            audio_file["title"] = new_title
+            audio_file.save()
+            return True
+
         except Exception as e:
-            print(f"  ✗ Error modifying metadata: {e}", file=sys.stderr)
-            # Clean up temp file if it exists
-            if "temp_file" in locals() and temp_file.exists():
-                temp_file.unlink()
+            print(f"  ✗ Error modifying metadata with mutagen: {e}", file=sys.stderr)
             return False
 
     def _verify_and_move_files(
@@ -421,16 +427,17 @@ class YouTubePuller:
             print(f"  ✗ No .opus file created for {video_id}", file=sys.stderr)
             return False
 
-        # Move the .opus file to final location
         opus_file = opus_files[0]  # Take the first (and should be only) .opus file
-        if final_file.exists():
-            final_file.unlink()
-        shutil.move(str(opus_file), str(final_file))
 
         # Modify metadata if custom title is provided
         if custom_title:
-            if not self._modify_metadata(final_file, custom_title):
+            if not self._modify_metadata_mutagen(opus_file, custom_title):
                 print(f"  ⚠ Warning: Could not modify metadata for {video_id}", file=sys.stderr)
+
+        # Move the .opus file to final location
+        if final_file.exists():
+            final_file.unlink()
+        shutil.move(str(opus_file), str(final_file))
 
         # Verify the .opus file exists in the final location
         if not final_file.exists():
