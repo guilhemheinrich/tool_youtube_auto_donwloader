@@ -8,6 +8,7 @@ All .opus files are stored directly in the output directory.
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -288,23 +289,35 @@ class YouTubePuller:
             except OSError as e:
                 print(f"Warning: Could not clean up temp directory {self.temp_dir}: {e}", file=sys.stderr)
 
-    def _get_ydl_opts(self, output_dir: Path, video_folder: str) -> dict[str, Any]:
+    def _get_ydl_opts(self, output_dir: Path, video_folder: str, custom_title: str | None = None) -> dict[str, Any]:
         """Build yt-dlp options for audio download with metadata."""
         opts = get_ydl_base_opts()
+        postprocessors = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "opus",
+                "preferredquality": "0",
+            },
+            {"key": "FFmpegMetadata"},
+            {"key": "EmbedThumbnail"},
+        ]
+
+        # Add custom metadata postprocessor if custom title is provided
+        if custom_title:
+            postprocessors.append(
+                {
+                    "key": "FFmpegMetadata",
+                    "add_metadata": True,
+                    "add_chapters": False,
+                }
+            )
+
         opts.update(
             {
                 "paths": {"home": str(output_dir / video_folder)},
                 "outtmpl": {"default": "%(id)s - %(title)s.%(ext)s"},
                 "format": "bestaudio/best",
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "opus",
-                        "preferredquality": "0",
-                    },
-                    {"key": "FFmpegMetadata"},
-                    {"key": "EmbedThumbnail"},
-                ],
+                "postprocessors": postprocessors,
                 "writethumbnail": True,
                 "writeinfojson": True,
                 "ignoreerrors": True,
@@ -341,9 +354,11 @@ class YouTubePuller:
             name = name.replace(char, "_")
         return name.strip()[:200]
 
-    def _download_to_temp(self, video_url: str, temp_video_dir: Path, folder_name: str) -> bool:
+    def _download_to_temp(
+        self, video_url: str, temp_video_dir: Path, video_id: str, custom_title: str | None = None
+    ) -> bool:
         """Download video to temporary directory."""
-        ydl_opts = self._get_ydl_opts(temp_video_dir.parent, folder_name)
+        ydl_opts = self._get_ydl_opts(temp_video_dir.parent, video_id, custom_title)
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
@@ -352,7 +367,53 @@ class YouTubePuller:
             print(f"  ✗ Error downloading: {e}", file=sys.stderr)
             return False
 
-    def _verify_and_move_files(self, video_id: str, temp_video_dir: Path, final_file: Path) -> bool:
+    def _modify_metadata(self, file_path: Path, new_title: str) -> bool:
+        """Modify the title metadata of an audio file using ffmpeg."""
+        try:
+            # Create a temporary file with a simple name
+            temp_file = file_path.parent / "temp_metadata.opus"
+
+            # Escape the title for ffmpeg command line
+            escaped_title = new_title.replace('"', '\\"').replace("'", "\\'")
+
+            # Use ffmpeg to modify the title metadata
+            cmd = [
+                "ffmpeg",
+                "-i",
+                str(file_path),
+                "-c",
+                "copy",
+                "-metadata",
+                f"title={escaped_title}",
+                "-y",  # Overwrite output file
+                str(temp_file),
+            ]
+
+            # Run ffmpeg command
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode == 0 and temp_file.exists():
+                # Replace original file with modified version
+                shutil.move(str(temp_file), str(file_path))
+                return True
+            else:
+                print(f"  ✗ Error modifying metadata: {result.stderr}", file=sys.stderr)
+                print(f"  Command: {' '.join(cmd)}", file=sys.stderr)
+                # Clean up temp file if it exists
+                if temp_file.exists():
+                    temp_file.unlink()
+                return False
+
+        except Exception as e:
+            print(f"  ✗ Error modifying metadata: {e}", file=sys.stderr)
+            # Clean up temp file if it exists
+            if "temp_file" in locals() and temp_file.exists():
+                temp_file.unlink()
+            return False
+
+    def _verify_and_move_files(
+        self, video_id: str, temp_video_dir: Path, final_file: Path, custom_title: str | None = None
+    ) -> bool:
         """Verify .opus file exists and move to final location."""
         # Check if .opus file was created successfully
         opus_files = list(temp_video_dir.glob("*.opus"))
@@ -365,6 +426,11 @@ class YouTubePuller:
         if final_file.exists():
             final_file.unlink()
         shutil.move(str(opus_file), str(final_file))
+
+        # Modify metadata if custom title is provided
+        if custom_title:
+            if not self._modify_metadata(final_file, custom_title):
+                print(f"  ⚠ Warning: Could not modify metadata for {video_id}", file=sys.stderr)
 
         # Verify the .opus file exists in the final location
         if not final_file.exists():
@@ -439,18 +505,18 @@ class YouTubePuller:
         # Determine target path using organizer
         target_path = self.organizer.get_target_path(filename, metadata, playlist_title)
         temp_dir = self._create_temp_dir()
-        temp_video_dir = temp_dir / f"{self._sanitize_name(clean_title)}.{video_id}"
+        temp_video_dir = temp_dir / video_id
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
 
         try:
             # Download to temporary directory
-            if not self._download_to_temp(video_url, temp_video_dir, f"{self._sanitize_name(clean_title)}.{video_id}"):
+            if not self._download_to_temp(video_url, temp_video_dir, video_id, clean_title):
                 return None
 
             # Verify and move files to temporary location first
             temp_final_file = self.output_dir / filename
-            if not self._verify_and_move_files(video_id, temp_video_dir, temp_final_file):
+            if not self._verify_and_move_files(video_id, temp_video_dir, temp_final_file, clean_title):
                 return None
 
             # Organize file to final location
