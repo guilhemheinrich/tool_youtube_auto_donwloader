@@ -1,0 +1,7 @@
+# YouTube Auto Downloader Configuration
+
+# Output directory (root folder for all downloads)
+output_dir: ./downloads
+
+# History file (tracks downloaded videos to avoid duplicates)
+history_file: ./downloads/history.json
