@@ -123,7 +123,14 @@ def main():
             print("\n\nInterrupted by user")
             sys.exit(1)
         except Exception as e:
-            print(f"\nError processing {url}: {e}", file=sys.stderr)
+            # Handle encoding errors for error messages
+            try:
+                error_msg = str(e)
+                print(f"\nError processing {url}: {error_msg}", file=sys.stderr)
+            except UnicodeEncodeError:
+                # Fallback for Windows console encoding issues
+                error_msg = str(e).encode("ascii", "replace").decode("ascii")
+                print(f"\nError processing {url}: {error_msg}", file=sys.stderr)
             print("Continuing to next URL...\n")
             continue
 

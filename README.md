@@ -1,168 +1,138 @@
-# tool-youtube-auto-downloader
+# YouTube Auto Downloader
 
-A Python project created with pyscaf
+Download YouTube videos or playlists as audio (.opus) with automatic library organization and a simple history to avoid duplicates.
 
-## Poetry Integration
+## Requirements
 
-This project uses Poetry for dependency management and packaging. Poetry provides a modern and efficient way to manage Python dependencies and build packages.
+- Python >= 3.10
+- FFmpeg installed and available on PATH (required by yt-dlp for audio extraction)
+- **JavaScript runtime (recommended)**: Node.js or Deno for better YouTube extraction support
+  - The tool will automatically detect and use Node.js or Deno if installed
+  - Without a JS runtime, some videos may fail to download (especially newer content)
+  - Install Node.js: https://nodejs.org/ (or via package manager: `choco install nodejs` on Windows, `brew install node` on macOS)
+  - Install Deno: https://deno.com/ (or via package manager)
 
-### Features
+## Installation
 
-- **Dependency Management**: Poetry manages project dependencies through `pyproject.toml`
-- **Virtual Environment**: Automatically creates and manages a virtual environment
-- **Build System**: Integrated build system for creating Python packages
-- **Lock File**: Generates a `poetry.lock` file for reproducible installations
-
-### Common Commands
+Using Poetry (recommended for local usage):
 
 ```bash
-# Install dependencies
 poetry install
+```
 
-# Add a new dependency
-poetry add package-name
+Activate the environment when needed:
 
-# Add a development dependency
-poetry add --dev package-name
-
-# Update dependencies
-poetry update
-
-# Run a command within the virtual environment
-poetry run python script.py
-
-# Activate the virtual environment
+```bash
 poetry shell
 ```
 
-### Project Structure
-
-The project follows a standard Python package structure:
-- `pyproject.toml`: Project configuration and dependencies
-- `poetry.lock`: Locked dependencies for reproducible builds
-- `src/`: Source code directory
-- `tests/`: Test files directory
-
-### Development
-
-To start developing:
-1. Ensure Poetry is installed
-2. Run `poetry install` to install all dependencies
-3. Use `poetry shell` to activate the virtual environment
-4. Start coding!
-
-For more information, visit [Poetry's official documentation](https://python-poetry.org/docs/).
-
-## Ruff Integration
-
-Ruff is an extremely fast Python linter and code formatter, written in Rust. It can replace Flake8, Black, isort, pyupgrade, and more, while being much faster than any individual tool.
-
-### VSCode Default Configuration
-
-The file `.vscode/default_settings.json` provides a recommended configuration for using Ruff in VSCode:
-
-```json
-{
-    "[python]": {
-      "editor.formatOnSave": true,
-      "editor.codeActionsOnSave": {
-        "source.fixAll": "explicit",
-        "source.organizeImports": "explicit"
-      },
-      "editor.defaultFormatter": "charliermarsh.ruff"
-    },
-    "notebook.formatOnSave.enabled": true,
-    "notebook.codeActionsOnSave": {
-      "notebook.source.fixAll": "explicit",
-      "notebook.source.organizeImports": "explicit"
-    },
-    "ruff.lineLength": 88
-}
-```
-
-#### Explanation of each line:
-- `editor.formatOnSave`: Enables automatic formatting on save for all files.
-- `[python].editor.defaultFormatter`: Sets Ruff as the default formatter for Python files.
-- `[python]editor.codeActionsOnSave.source.organizeImports`: Organizes Python imports automatically on save.
-- `[python]editor.codeActionsOnSave.source.fixAll`: Applies all available code fixes (including linting) on save.
-- `ruff.lineLength`: Line length for your python files
-
-### Useful Ruff Commands
-
-You can run the following commands commands directly in the shell
+Alternatively, run commands without activating the shell:
 
 ```bash
-# Lint all Python files in the current directory
-ruff check .
-
-# Format all Python files in the current directory
-ruff format .
-
-# Automatically fix all auto-fixable problems
-ruff check . --fix
+poetry run yt-pull --help
+poetry run yt-batch --help
 ```
 
-For more information, see the [official Ruff VSCode extension documentation](https://github.com/astral-sh/ruff-vscode) and the [Ruff documentation](https://docs.astral.sh/ruff/). 
+## Quick Start
 
-You can enable specific rules over a catalog of over 800+ rules, depending on your needs or framework of choice. Check it out at the [Ruff documentation](docs.astral.sh/ruff/rules/). 
-
-## Git Integration
-
-This project uses Git for version control, providing a robust system for tracking changes, collaborating, and managing code history.
-
-### Features
-
-- **Version Control**: Track changes and manage code history
-- **Branching**: Create and manage feature branches
-- **Collaboration**: Work with remote repositories
-- **Git Hooks**: Automated scripts for repository events
-
-### Common Commands
+1) Copy and edit the example configuration:
 
 ```bash
-# Initialize repository
-git init
-
-# Clone repository
-git clone <repository-url>
-
-# Create and switch to new branch
-git checkout -b feature-name
-
-# Stage changes
-git add .
-
-# Commit changes
-git commit -m "commit message"
-
-# Push changes
-git push origin branch-name
-
-# Pull latest changes
-git pull origin branch-name
+cp config.example.yaml config.yaml
+# set output_dir and history_file to your preferred locations
 ```
 
-### Project Structure
+2) (Optional) Prepare a URLs list file, one URL per line. You can start from the example:
 
-The project includes:
-- `.git/`: Git repository data
-- `.gitignore`: Specifies intentionally untracked files
-- `.gitattributes`: Defines attributes for paths
-- `hooks/`: Custom Git hooks (if present)
+```bash
+cp urls.example.txt urls.txt
+```
 
-### Development Workflow
+## Commands
 
-1. Create a new branch for features/fixes
-2. Make changes and commit regularly
-3. Push changes to remote repository
-4. Create pull requests for code review
-5. Merge approved changes to main branch
+Two CLI entry points are provided:
 
-### Best Practices
+- yt-pull: Download a single URL (video or playlist)
+- yt-batch: Process multiple URLs from a file
 
-- Write clear commit messages
-- Keep commits focused and atomic
-- Use meaningful branch names
-- Regularly pull from main branch
-- Review changes before committing
-For more information, visit [Git's official documentation](https://git-scm.com/doc). 
+### yt-pull
+
+```bash
+yt-pull URL --output-dir <DIR> --history-file <FILE> [--flat-import]
+```
+
+- URL: YouTube video or playlist URL
+- --output-dir: Root folder where audio files will be saved
+- --history-file: JSON file tracking downloaded videos (prevents duplicates)
+- --flat-import: Disable directory organization; place files at the root of output_dir
+
+Examples:
+
+```bash
+# Video
+poetry run yt-pull "https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
+  --output-dir ./downloads \
+  --history-file ./downloads/history.json
+
+# Playlist
+poetry run yt-pull "https://www.youtube.com/playlist?list=PLxxxxx" \
+  --output-dir ./downloads \
+  --history-file ./downloads/history.json
+```
+
+### yt-batch
+
+Use a YAML config and a text file containing one URL per line.
+
+```bash
+yt-batch --urls-file <PATH_TO_TXT> --config <PATH_TO_YAML> [--flat-import]
+```
+
+Config file (YAML):
+
+```yaml
+output_dir: ./downloads
+history_file: ./downloads/history.json
+```
+
+Example:
+
+```bash
+poetry run yt-batch \
+  --urls-file ./urls.txt \
+  --config ./config.yaml
+```
+
+## File Organization
+
+By default, files are organized under output_dir using metadata:
+
+- Artist/Album/Title.opus when artist and album are known
+- Artist/singles/Title.opus when only artist is known
+- _singles/Title.opus when no metadata is available
+
+Use --flat-import to store everything directly under output_dir.
+
+## Troubleshooting
+
+### JavaScript Runtime Warnings
+
+If you see warnings about missing JavaScript runtime:
+- **Solution**: Install Node.js or Deno (see Requirements above)
+- The tool will automatically detect and use an installed runtime
+- Some videos may still work without a JS runtime, but newer content often requires it
+
+### Download Errors
+
+- Ensure FFmpeg is installed and visible on PATH
+- Check that you have a JavaScript runtime installed (Node.js or Deno)
+- Some videos may be unavailable due to YouTube restrictions or removal
+
+### Other Tips
+
+- The history file prevents re-downloading the same video ID; you can delete specific entries from the JSON if needed
+- If metadata extraction fails, the tool will still attempt to download the video with available information
+
+## License
+
+MIT

@@ -8,6 +8,7 @@ All .opus files are stored directly in the output directory.
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -168,9 +169,33 @@ class FileOrganizer:
             return False
 
 
+def detect_js_runtime() -> str | None:
+    """
+    Detect available JavaScript runtime (Node.js or Deno).
+    Returns the runtime name if found, None otherwise.
+    """
+    # Try Node.js first
+    try:
+        result = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode == 0:
+            return "node"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Try Deno
+    try:
+        result = subprocess.run(["deno", "--version"], capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode == 0:
+            return "deno"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return None
+
+
 def get_ydl_base_opts() -> dict[str, Any]:
-    """Get base yt-dlp options with anti-detection settings."""
-    return {
+    """Get base yt-dlp options with anti-detection settings and JavaScript runtime."""
+    opts = {
         # Anti-detection options to avoid 403 errors
         "user_agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -180,6 +205,19 @@ def get_ydl_base_opts() -> dict[str, Any]:
         "sleep_interval": 1,
         "max_sleep_interval": 5,
     }
+
+    # Try to detect and configure JavaScript runtime
+    # yt-dlp expects js_runtimes as a dict: {runtime_name: {config}}
+    js_runtime = detect_js_runtime()
+    if js_runtime:
+        opts["js_runtimes"] = {js_runtime: {}}
+        # Enable automatic download of remote challenge solver scripts from GitHub
+        # This is required for YouTube to work properly with JS runtime
+        opts["remote_components"] = ["ejs:github"]
+    # If no runtime is found, yt-dlp will show a warning but should still work
+    # for most videos (though some may fail)
+
+    return opts
 
 
 class DownloadedVideo(BaseModel):
@@ -468,8 +506,11 @@ class YouTubePuller:
                 # Try to extract album and artist from various sources
                 if "album" in info:
                     metadata["album"] = info["album"]
-                elif "album" in info.get("tags", []):
-                    metadata["album"] = info["tags"]["album"]
+                else:
+                    # Check if tags is a dictionary (not a list)
+                    tags = info.get("tags")
+                    if isinstance(tags, dict) and "album" in tags:
+                        metadata["album"] = tags["album"]
 
                 if "artist" in info:
                     metadata["artist"] = info["artist"]
@@ -477,8 +518,11 @@ class YouTubePuller:
                     metadata["artist"] = info["uploader"]
                 elif "creator" in info:
                     metadata["artist"] = info["creator"]
-                elif "artist" in info.get("tags", []):
-                    metadata["artist"] = info["tags"]["artist"]
+                else:
+                    # Check if tags is a dictionary (not a list)
+                    tags = info.get("tags")
+                    if isinstance(tags, dict) and "artist" in tags:
+                        metadata["artist"] = tags["artist"]
 
                 return metadata
         except Exception as e:
@@ -532,16 +576,32 @@ class YouTubePuller:
 
             # Only mark as downloaded if everything succeeded
             self.tracker.mark_downloaded(video_id, clean_title, target_path.name, album, artist)
-            print(f"  ✓ Downloaded: {target_path.name}")
-            print(f"    Location: {target_path.relative_to(self.output_dir)}")
-            if album:
-                print(f"    Album: {album}")
-            if artist:
-                print(f"    Artist: {artist}")
+
+            # Print success message - handle encoding errors separately so they don't fail the download
+            try:
+                print(f"  ✓ Downloaded: {target_path.name}")
+                print(f"    Location: {target_path.relative_to(self.output_dir)}")
+                if album:
+                    print(f"    Album: {album}")
+                if artist:
+                    print(f"    Artist: {artist}")
+            except UnicodeEncodeError:
+                # Fallback for Windows console encoding issues - file is still downloaded successfully
+                print(f"  Downloaded: {target_path.name}")
+                print(f"    Location: {target_path.relative_to(self.output_dir)}")
+                if album:
+                    print(f"    Album: {album}")
+                if artist:
+                    print(f"    Artist: {artist}")
+
             return target_path.name
 
         except Exception as e:
-            print(f"  ✗ Error downloading {video_id}: {e}", file=sys.stderr)
+            # Only catch real errors, not encoding issues from prints
+            try:
+                print(f"  ✗ Error downloading {video_id}: {e}", file=sys.stderr)
+            except UnicodeEncodeError:
+                print(f"  Error downloading {video_id}: {e}", file=sys.stderr)
             # Clean up any partial files
             if target_path.exists():
                 target_path.unlink()
@@ -568,7 +628,10 @@ class YouTubePuller:
 
         print(f"Video: {info.get('title', 'Unknown')}")
         self._download_video(video_id)
-        print("\n✓ Finished processing video")
+        try:
+            print("\n✓ Finished processing video")
+        except UnicodeEncodeError:
+            print("\nFinished processing video")
 
     def pull_playlist(self, url: str) -> None:
         """Download all videos from a playlist."""
@@ -608,7 +671,10 @@ class YouTubePuller:
             # Download video
             self._download_video(video_id, playlist_title)
 
-        print(f"\n✓ Finished processing playlist: {playlist_title}")
+        try:
+            print(f"\n✓ Finished processing playlist: {playlist_title}")
+        except UnicodeEncodeError:
+            print(f"\nFinished processing playlist: {playlist_title}")
         print(f"  Total videos in playlist: {len(entries)}")
 
     def pull(self, url: str) -> None:
