@@ -108,7 +108,7 @@ class FileOrganizer:
 
         Args:
             filename: The filename to organize
-            metadata: Dictionary containing 'artist', 'album', 'title' keys
+            metadata: Dictionary containing 'artist', 'album', 'album_artist', 'title' keys
             playlist_title: Title of the playlist if the file comes from a playlist
 
         Returns:
@@ -117,7 +117,9 @@ class FileOrganizer:
         if self.flat_import:
             return self.output_dir / filename
 
-        artist = metadata.get("artist")
+        # Use album_artist (main artist) for folder organization when available
+        # This prevents creating separate folders for each featured artist combination
+        artist = metadata.get("album_artist") or metadata.get("artist")
         album = metadata.get("album")
 
         # Case 1: Has both artist and album metadata
@@ -485,7 +487,7 @@ class YouTubePuller:
         return True
 
     def _extract_metadata(self, video_id: str) -> dict[str, Any] | None:
-        """Extract video metadata including title, album, and artist."""
+        """Extract video metadata including title, album, artist, and album_artist."""
         video_url = f"https://www.youtube.com/watch?v={video_id}"
         try:
             ydl_opts = get_ydl_base_opts()
@@ -501,9 +503,9 @@ class YouTubePuller:
                     return None
 
                 # Extract metadata
-                metadata = {"title": info.get("title", "Unknown"), "album": None, "artist": None}
+                metadata = {"title": info.get("title", "Unknown"), "album": None, "artist": None, "album_artist": None}
 
-                # Try to extract album and artist from various sources
+                # Try to extract album from various sources
                 if "album" in info:
                     metadata["album"] = info["album"]
                 else:
@@ -512,6 +514,7 @@ class YouTubePuller:
                     if isinstance(tags, dict) and "album" in tags:
                         metadata["album"] = tags["album"]
 
+                # Try to extract artist from various sources
                 if "artist" in info:
                     metadata["artist"] = info["artist"]
                 elif "uploader" in info:
@@ -523,6 +526,21 @@ class YouTubePuller:
                     tags = info.get("tags")
                     if isinstance(tags, dict) and "artist" in tags:
                         metadata["artist"] = tags["artist"]
+
+                # Try to extract album_artist (used for folder organization)
+                # album_artist is the main artist of an album, unlike artist which can contain featured artists
+                if "album_artist" in info:
+                    metadata["album_artist"] = info["album_artist"]
+                else:
+                    # Check if tags is a dictionary (not a list)
+                    tags = info.get("tags")
+                    if isinstance(tags, dict) and "album_artist" in tags:
+                        metadata["album_artist"] = tags["album_artist"]
+                    # For YouTube Music, when album_artist is not available, use uploader as fallback
+                    # The uploader typically represents the main artist of the album
+                    elif metadata["album"] and "uploader" in info:
+                        # Only use uploader as album_artist if we have an album (indicating this is part of an album)
+                        metadata["album_artist"] = info["uploader"]
 
                 return metadata
         except Exception as e:
@@ -546,9 +564,12 @@ class YouTubePuller:
         title = metadata["title"]
         album = metadata["album"]
         artist = metadata["artist"]
+        album_artist = metadata.get("album_artist")
 
-        # Clean title by removing artist name if present
-        clean_title = self.organizer._clean_title(title, artist)
+        # Use album_artist for cleaning title if available, otherwise use artist
+        # This removes the main artist from the title, not the featured artists
+        artist_for_cleaning = album_artist or artist
+        clean_title = self.organizer._clean_title(title, artist_for_cleaning)
 
         # Create filename
         filename = f"{self._sanitize_name(clean_title)}.opus"

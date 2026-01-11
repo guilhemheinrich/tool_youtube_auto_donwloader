@@ -111,6 +111,8 @@ By default, files are organized under output_dir using metadata:
 - Artist/singles/Title.opus when only artist is known
 - _singles/Title.opus when no metadata is available
 
+**Note on Album Artists**: For album tracks with featured artists (e.g., "Gorillaz feat. Thundercat"), the tool intelligently uses the main album artist (e.g., "Gorillaz") for folder organization, preventing the creation of multiple folders for each artist combination. The full artist information (including featured artists) is still preserved in the file's metadata.
+
 Use --flat-import to store everything directly under output_dir.
 
 ## Troubleshooting
