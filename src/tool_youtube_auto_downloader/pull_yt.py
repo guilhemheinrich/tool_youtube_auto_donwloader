@@ -199,13 +199,25 @@ def get_ydl_base_opts() -> dict[str, Any]:
     """Get base yt-dlp options with anti-detection settings and JavaScript runtime."""
     opts = {
         # Anti-detection options to avoid 403 errors
+        # Use a more recent user-agent to avoid detection
         "user_agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         ),
         "referer": "https://www.youtube.com/",
         "sleep_interval": 1,
         "max_sleep_interval": 5,
+        # Try multiple YouTube clients to bypass restrictions
+        # The order matters: try android first, then ios, then mweb, then web
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "mweb", "web"],
+                "player_skip": ["webpage", "configs"],
+            }
+        },
+        # Add delay between requests to avoid rate limiting
+        "sleep_interval_requests": 2,
+        "sleep_interval_subtitles": 2,
     }
 
     # Try to detect and configure JavaScript runtime
@@ -389,8 +401,9 @@ class YouTubePuller:
                 "ignoreerrors": True,
                 "no_warnings": False,
                 "extract_flat": False,
-                "sleep_interval_requests": 1,
-                "sleep_interval_subtitles": 1,
+                # Sleep intervals are already set in base opts, but ensure they're applied
+                "sleep_interval_requests": 2,
+                "sleep_interval_subtitles": 2,
             }
         )
         return opts
